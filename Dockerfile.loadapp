@@ -1,0 +1,12 @@
+# Builds the experiment workload (cmd/loadapp) into a tiny image that
+# Helios can deploy like any other app. Build context is the repo root:
+#   docker build -f Dockerfile.loadapp -t helios-loadapp:latest .
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -o /loadapp ./cmd/loadapp
+
+FROM alpine:3.19
+COPY --from=build /loadapp /loadapp
+EXPOSE 8080
+ENTRYPOINT ["/loadapp"]
