@@ -18,11 +18,10 @@ Deploy container apps across a cluster, route traffic through a from-scratch
 reverse proxy, and perform zero-downtime, make-before-break migration of an app
 between nodes on command. Node failure triggers automatic rescheduling.
 
-**Milestone 2 (designed-in, not yet built): the predictive control plane.**
-Traffic telemetry from `proxyd` → wavefront prediction → autonomous placement.
-The reconciler already converges on "desired state" from any writer; the
-predictive placer simply becomes another writer. The seams are marked in code
-(`internal/reconciler`, `internal/proxy`, the `region` field on nodes).
+**Milestone 2: the predictive control plane.**
+Traffic telemetry from `proxyd` feeds a wavefront predictor, which feeds an
+autonomous placer. The reconciler converges on "desired state" from any
+writer, so the placer is just another writer of that state.
 
 ## Architecture
 
@@ -146,17 +145,17 @@ Two correctness bugs surfaced *by these load tests* and were fixed:
   keep running; only *changes* (deploys, migrations, failover) pause.
 - **Health checks are TCP** — HTTP `/healthz` is a natural upgrade.
 - **Apps are prebuilt images** — the source→image build pipeline (git push
-  deploys) is the next feature after M2 telemetry.
+  deploys) is a later addition.
 - Agents **poll** (2s) rather than watch; fine at this scale, and an honest
   conversation-starter about watch streams vs. polling.
 
-## Telemetry (M2 step 2)
+## Telemetry
 
 proxyd is the traffic sensor: every request is recorded by (app, client
 region) with a latency histogram, aggregated at the edge, and shipped as
 delta reports to controld every 5s. controld keeps them in a tiny built-in
 time-series store (10s buckets, 1h retention) — the exact data the
-predictor (step 3) reads. Client region comes from the `X-Client-Region`
+predictor reads. Client region comes from the `X-Client-Region`
 header in simulation; production would GeoIP the client address (the
 resolver in `internal/proxy` is the one-function seam).
 
@@ -172,9 +171,9 @@ watch -n 2 "curl -s 'localhost:8080/v1/telemetry?app=web&minutes=2'"
 
 You'll see demand peak in us-east, hand off to eu-west, then ap-south, and
 wrap — one full cycle every two minutes. That rotating wave is exactly what
-the step-3 predictor will forecast and the step-4 placer will chase.
+the predictor forecasts and the placer chases.
 
-## Wavefront predictor (M2 step 3)
+## Wavefront predictor
 
 Every 10s the predictor refits per-(app, region) forecasts over the last
 5 minutes of telemetry and projects 30s ahead. Two algorithms run side by
@@ -197,7 +196,7 @@ simulated days. Details that matter: gaps in the series are filled as zero
 traffic (a missing bucket is silence, not missing data), and the newest,
 partial bucket is excluded from fitting (it would read as a phantom crash).
 
-## Autonomous placer (M2 step 4) — follow the sun
+## Autonomous placer — follow the sun
 
 Deploy an app with `--autoplace` and Helios manages its geography: every
 10s the placer turns per-region Holt forecasts into a region plan
@@ -232,12 +231,11 @@ after the cooldown — with every decision explained in the log. Manual
 
 ## Roadmap
 
-1. ✅ M1: cluster, scheduler, reconciler, proxy, hitless migration
-2. ✅ Traffic telemetry in proxyd (per-app request rate + client geo + p95)
-3. ✅ Wavefront predictor (EWMA + Holt, 30s horizon, self-scored MAE)
-4. ✅ Autonomous placer (region plans, asymmetric hysteresis, decision log)
-5. 🚧 Experiment harness: `scripts/` drive the live cluster and prove
-   hitless migration (0 dropped / ~10k), ~14s failover, and follow-the-sun
-   placement. Next: automated p95/cost/cold-start comparison vs. a static
-   multi-region baseline.
-6. Live world-map dashboard of migration decisions
+Built so far: the cluster, scheduler, reconciler, and proxy; hitless
+migration; automatic failover; edge traffic telemetry; the wavefront
+predictor; and the autonomous placer with its decision log. The scripts in
+`scripts/` drive the live cluster end to end and produce the numbers above.
+
+Still ahead: an automated p95/cost comparison against a static multi-region
+baseline, a source→image build pipeline (git-push deploys), and a live
+world-map view of placement decisions.
