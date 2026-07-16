@@ -122,3 +122,116 @@ func TestEngine_StepEmitsForecastForConstantLoad(t *testing.T) {
 		t.Errorf("Holt forecast = %v, want ~5 for constant load", f.Holt.PredictedRPS)
 	}
 }
+
+// --- seasonal predictor (option 2) ---
+
+// sineSeries builds a periodic RPS series of `n` buckets with the given
+// period, oscillating between ~10 and ~90 rps.
+func sineSeries(n, period int) []float64 {
+	v := make([]float64, n)
+	for i := range v {
+		x := 50 + 40*math.Sin(2*math.Pi*float64(i)/float64(period))
+		if x < 0 {
+			x = 0
+		}
+		v[i] = x
+	}
+	return v
+}
+
+func TestDetectPeriod_FindsCycle(t *testing.T) {
+	if p := detectPeriod(sineSeries(60, 10)); p != 10 {
+		t.Errorf("detectPeriod = %d, want 10", p)
+	}
+}
+
+func TestDetectPeriod_FlatSeriesHasNone(t *testing.T) {
+	flat := make([]float64, 40)
+	for i := range flat {
+		flat[i] = 7
+	}
+	if p := detectPeriod(flat); p != 0 {
+		t.Errorf("flat series period = %d, want 0", p)
+	}
+}
+
+func TestForecastSeasonal_RequiresTwoCycles(t *testing.T) {
+	if _, ok := forecastSeasonal(sineSeries(15, 10), 0, 5, 10); ok {
+		t.Error("seasonal should refuse with fewer than two full cycles")
+	}
+	if _, ok := forecastSeasonal(sineSeries(30, 10), 0, 5, 10); !ok {
+		t.Error("seasonal should work with two+ full cycles")
+	}
+}
+
+func TestForecastSeasonal_PredictsSamePhase(t *testing.T) {
+	// With clean periodicity, the forecast for `steps` ahead should match
+	// the true value at the target phase.
+	period, n, steps := 10, 50, 5
+	vals := sineSeries(n, period)
+	got, ok := forecastSeasonal(vals, 0, steps, period)
+	if !ok {
+		t.Fatal("expected a seasonal forecast")
+	}
+	targetSlot := int64(n-1) + int64(steps)
+	want := 50 + 40*math.Sin(2*math.Pi*float64(targetSlot)/float64(period))
+	if math.Abs(got-want) > 2 {
+		t.Errorf("seasonal forecast = %.2f, want ~%.2f (phase %d)", got, want, targetSlot%int64(period))
+	}
+}
+
+// The headline test: on periodic demand, the seasonal model's self-scored
+// MAE beats Holt's, and the engine selects it as Best.
+func TestEngine_SeasonalBeatsHoltOnPeriodicDemand(t *testing.T) {
+	db := tsdb.New()
+	res := int64(tsdb.Resolution.Seconds())
+	const period, n = 10, 70
+
+	nowReal := time.Now()
+	lastEnd := time.Unix((nowReal.Unix()/res)*res, 0)
+	v := func(slot int64) float64 {
+		x := 50 + 40*math.Sin(2*math.Pi*float64(slot)/float64(period))
+		if x < 0 {
+			x = 0
+		}
+		return x
+	}
+	for i := 0; i < n; i++ {
+		end := lastEnd.Add(-time.Duration(n-1-i) * tsdb.Resolution)
+		slot := end.Unix() / res
+		db.Ingest(api.TelemetryReport{
+			End: end,
+			Entries: []api.TelemetryEntry{{
+				App: "web.local", Region: "us-east",
+				Requests:       int64(v(slot) * float64(res)),
+				LatencyBuckets: make([]int64, telemetry.NumBuckets),
+			}},
+		}, resolveWeb)
+	}
+
+	e := NewEngine(db)
+	firstEnd := lastEnd.Add(-time.Duration(n-1) * tsdb.Resolution)
+	for s := 0; s < n; s++ {
+		e.step(firstEnd.Add(time.Duration(s+1) * tsdb.Resolution))
+	}
+
+	holtMAE := e.getMAE("web", "us-east", "holt")
+	seasonalMAE := e.getMAE("web", "us-east", "seasonal")
+	if !e.maeSeeded[seriesKey{"web", "us-east", "seasonal"}] {
+		t.Fatal("seasonal model never matured — check window/period")
+	}
+	if seasonalMAE >= holtMAE {
+		t.Errorf("seasonal MAE %.2f should beat Holt MAE %.2f on periodic demand", seasonalMAE, holtMAE)
+	}
+
+	fcs := e.Forecasts()
+	if len(fcs) != 1 {
+		t.Fatalf("want 1 forecast, got %d", len(fcs))
+	}
+	if fcs[0].BestAlgo != "seasonal" {
+		t.Errorf("model selection picked %q, want seasonal (period detected: %ds)", fcs[0].BestAlgo, fcs[0].PeriodSec)
+	}
+	if fcs[0].PeriodSec != period*int(res) {
+		t.Errorf("detected period = %ds, want %ds", fcs[0].PeriodSec, period*int(res))
+	}
+}

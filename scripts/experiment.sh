@@ -19,10 +19,10 @@ cd "$(dirname "$0")/.."
 export PATH="$PATH:/usr/local/go/bin"
 
 RPS=120
-DAY=240           # seconds per simulated global day. Each region stays hot
-                  # longer than the placement loop's latency, the regime
-                  # where follow-the-sun can keep up.
-DURATION=150      # ~0.6 day: several regional handoffs
+DAY=80            # seconds per simulated global day
+WARMUP=220        # unmeasured lead-in so the seasonal predictor learns the
+                  # cycle (needs >=2 periods of history) before we measure
+DURATION=120      # measured window (~1.5 days)
 CONC=3            # demand concentrates in the currently-sunny region
 RPS_PER=60        # capacity model: one replica serves 60 rps
 
@@ -74,6 +74,14 @@ run_arm() {
     code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: web.local' http://127.0.0.1:8000/ || true)
     [ "$code" = "200" ] && break; sleep 0.5
   done
+
+  # Warmup: drive the workload (unmeasured) so telemetry accumulates enough
+  # history for the seasonal predictor to lock onto the cycle before we
+  # measure. Static arms ignore it, so all arms see the same total load.
+  if [ "${WARMUP:-0}" -gt 0 ]; then
+    ./bin/trafficgen --host web.local --rps "$RPS" --day "${DAY}s" --duration "${WARMUP}s" \
+      --concentration "$CONC" --regions "$REGIONS_CSV" >/dev/null 2>&1
+  fi
 
   # Sample held replicas once per second for the cost metric.
   local sumfile="$LOGDIR/replicas.txt"; : > "$sumfile"

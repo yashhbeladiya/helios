@@ -185,14 +185,16 @@ func (e *Engine) step(now time.Time) {
 		}
 		forecasts := byApp[app.Name] // may be nil: no traffic seen yet
 
-		// Raw need per region from the Holt forecast (the trend-aware
-		// one; EWMA is kept as the comparison baseline).
+		// Raw need per region from the best forecast: the predictor
+		// self-scores each algorithm's accuracy (MAE) and exposes the most
+		// accurate one as Best. On cyclic demand that's the seasonal model,
+		// which pre-warms through turning points instead of lagging them.
 		needed := map[string]int{}
 		rpsOf := map[string]float64{}
 		for region := range regions {
 			var rps float64
 			if f, ok := forecasts[region]; ok {
-				rps = f.Holt.PredictedRPS
+				rps = f.Best.PredictedRPS
 			}
 			rpsOf[region] = rps
 			needed[region] = int(math.Ceil(rps * Headroom / float64(rpsPer)))

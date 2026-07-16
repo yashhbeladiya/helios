@@ -17,8 +17,10 @@ func (s *stubFC) Forecasts() []predict.Forecast { return s.f }
 func fc(region string, holtRPS float64) predict.Forecast {
 	return predict.Forecast{
 		App: "web", Region: region, CurrentRPS: holtRPS,
-		Holt: predict.AlgoForecast{PredictedRPS: holtRPS},
-		EWMA: predict.AlgoForecast{PredictedRPS: holtRPS},
+		Holt:     predict.AlgoForecast{PredictedRPS: holtRPS},
+		EWMA:     predict.AlgoForecast{PredictedRPS: holtRPS},
+		Best:     predict.AlgoForecast{PredictedRPS: holtRPS},
+		BestAlgo: "holt",
 	}
 }
 
